@@ -2,6 +2,10 @@
 #include <HttpClient.h>
 #include <TFT_eSPI.h> // TTGO T-Display uses this library
 #include <SPI.h>
+#include <SparkFunLSM6DSO.h>
+#include <Wire.h>
+
+LSM6DSO myIMU; // Gyro/accel
 
 TFT_eSPI tft = TFT_eSPI();  // Initialize TFT
 
@@ -21,6 +25,13 @@ const unsigned long longPressDuration = 800;
 int lastButtonState = LOW;
 bool buttonPressed = false;
 
+// IMU twist detection
+float lastGyroX = 0;
+unsigned long lastTwistTime = 0;
+int twistCount = 0;
+const unsigned long twistResetTime = 800; // ms
+const float twistThreshold = 50.0; // degrees/sec
+
 // Timer state
 bool timerRunning = false;
 bool timerPaused = false;
@@ -38,6 +49,19 @@ void sendElapsedTimeToServer(unsigned long elapsedTime);
 
 void setup() {
   Serial.begin(115200);
+
+  //I2C Connection
+  Wire.begin();
+  delay(10);
+
+  if (!myIMU.begin()) {
+    Serial.println("Could not connect to IMU.");
+    while (1); // Stop if failed
+  }
+
+  if (myIMU.initialize(BASIC_SETTINGS)) {
+    Serial.println("IMU Initialized.");
+  }
 
   // Initialize TFT
   tft.init();
@@ -79,6 +103,35 @@ void setup() {
 void loop() {
   int currentButtonState = digitalRead(buttonPin);
   unsigned long currentTime = millis();
+
+    // --- Gyro Twist Detection ---
+  float gyroX = myIMU.readFloatGyroX(); // Use Gyro X-axis (or Z/Y depending on orientation)
+
+  if ((gyroX > twistThreshold && lastGyroX < -twistThreshold) || 
+      (gyroX < -twistThreshold && lastGyroX > twistThreshold)) {
+    
+    if (millis() - lastTwistTime < twistResetTime) {
+      twistCount++;
+    } else {
+      twistCount = 1; // reset sequence if too long between twists
+    }
+
+    lastTwistTime = millis();
+    Serial.print("Twist detected. Count: ");
+    Serial.println(twistCount);
+  }
+
+  lastGyroX = gyroX;
+
+  // Interpret gestures
+  if (twistCount >= 2) {
+    handleLongPress();  // Start/Stop
+    twistCount = 0;
+  } else if (twistCount == 1 && millis() - lastTwistTime > 500) {
+    handleShortPress(); // Pause/Unpause
+    twistCount = 0;
+  }
+
 
   if (currentButtonState != lastButtonState) {
     delay(50); // debounce delay
